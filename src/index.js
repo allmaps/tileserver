@@ -22,6 +22,8 @@ const app = express()
 const port = process.env.PORT || 3000
 
 function sendFetchError (res, err) {
+  console.error('Fetch error:', err.message)
+
   if (!err.response) {
     res.status(500).send({
       error: 'Internal server error'
