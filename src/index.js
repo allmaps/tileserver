@@ -5,6 +5,7 @@ import express from 'express'
 import { createTransformer, toImage } from '@allmaps/transform'
 import { parseIiif, getIiifTile, getImageUrl } from '@allmaps/iiif-parser'
 import { iiifTilesForMapExtent } from '@allmaps/render'
+import { parse } from '@allmaps/annotation'
 
 import { xyzTileToGeoExtent, pointInPolygon } from './geo.js'
 import { fetchJson, fetchImage } from './fetch.js'
@@ -21,7 +22,7 @@ const app = express()
 
 const port = process.env.PORT || 3000
 
-function sendFetchError (res, err) {
+function sendFetchError(res, err) {
   // TODO: send error description in HTTP headers
   console.error('Fetch error:', err.message)
 
@@ -45,63 +46,16 @@ function sendFetchError (res, err) {
   }
 }
 
-function sendError (res, err) {
+function sendError(res, err) {
   res.status(500).send({
     error: err.message || 'Internal server error'
   })
 }
 
-app.get('/', async (req, res) => {
-  res.send({
-    name: 'Allmaps Tile Server'
-  })
-})
-
-// TODO:
-// app.get('/maps/:mapId/tiles.json', async (req, res) => {
-//   // See https://github.com/mapbox/tilejson-spec/blob/master/3.0.0/example/osm.json
-// })
-
-// TODO: support retina tiles @2x
-app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
-  res.set({ 'Content-Type': 'image/png' })
-
-  // TODO: implement cancelled request
-  // req.on('close', (err) => {
-  //   cancelRequest = true
-  // })
-
-  let useCache = true
-  if ('nocache' in req.query) {
-    useCache = false
-  }
-
-  const xyzTileUrl = `https://tiles.allmaps.org${req.originalUrl}`
-
-  let cached
-  // TODO: also use useCache in fetchImage and fetchJson
-  if (useCache) {
-    cached = await cache.get(xyzTileUrl)
-  }
-
-  if (cached) {
-    res.send(cached)
-    return
-  }
-
-  const mapId = req.params.mapId
-
+async function sendWarpedMapTile(req, res, map, cache) {
   const z = parseInt(req.params.z)
   const x = parseInt(req.params.x)
   const y = parseInt(req.params.y)
-
-  let map
-  try {
-    map = await fetchJson(cache, `https://api.allmaps.org/maps/${mapId}`)
-  } catch (err) {
-    sendFetchError(res, err)
-    return
-  }
 
   let pixelMask
   if (map.pixelMask) {
@@ -126,7 +80,7 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
     return
   }
 
-  const extent = xyzTileToGeoExtent({x, y, z})
+  const extent = xyzTileToGeoExtent({ x, y, z })
 
   let transformer
   try {
@@ -136,16 +90,22 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
     return
   }
 
-  const iiifTiles = iiifTilesForMapExtent(transformer, parsedImage, [TILE_SIZE, TILE_SIZE], extent)
-  const iiifTileUrls = iiifTiles
-    .map((tile) => {
-      const { region, size } = getIiifTile(parsedImage, tile, tile.x, tile.y)
-      return getImageUrl(parsedImage, { region, size })
-    })
+  const iiifTiles = iiifTilesForMapExtent(
+    transformer,
+    parsedImage,
+    [TILE_SIZE, TILE_SIZE],
+    extent
+  )
+  const iiifTileUrls = iiifTiles.map((tile) => {
+    const { region, size } = getIiifTile(parsedImage, tile, tile.x, tile.y)
+    return getImageUrl(parsedImage, { region, size })
+  })
 
   let iiifTileImages
   try {
-    iiifTileImages = await Promise.all(iiifTileUrls.map((url) => fetchImage(cache, url)))
+    iiifTileImages = await Promise.all(
+      iiifTileUrls.map((url) => fetchImage(cache, url))
+    )
   } catch (err) {
     sendError(res, err)
     return
@@ -153,11 +113,16 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
 
   let buffers
   try {
-    buffers = await Promise.all(iiifTileImages
-      .map((image) => image.length ? sharp(image)
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true }) : null))
+    buffers = await Promise.all(
+      iiifTileImages.map((image) =>
+        image.length
+          ? sharp(image)
+              .ensureAlpha()
+              .raw()
+              .toBuffer({ resolveWithObject: true })
+          : null
+      )
+    )
   } catch (err) {
     sendError(res, err)
     return
@@ -204,8 +169,12 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
         tileXMin = tile.x * tile.originalWidth
         tileYMin = tile.y * tile.originalHeight
 
-        if (pixelX >= tileXMin && pixelX <= tileXMin + tile.originalWidth &&
-          pixelY >= tileYMin && pixelY <= tileYMin + tile.originalHeight) {
+        if (
+          pixelX >= tileXMin &&
+          pixelX <= tileXMin + tile.originalWidth &&
+          pixelY >= tileYMin &&
+          pixelY <= tileYMin + tile.originalHeight
+        ) {
           foundTile = true
           break
         }
@@ -219,11 +188,15 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
           const pixelTileY = (pixelY - tileYMin) / tile.scaleFactor
 
           const warpedBufferIndex = (x * TILE_SIZE + y) * CHANNELS
-          const bufferIndex = (Math.floor(pixelTileY) * buffer.info.width + Math.floor(pixelTileX)) * buffer.info.channels
+          const bufferIndex =
+            (Math.floor(pixelTileY) * buffer.info.width +
+              Math.floor(pixelTileX)) *
+            buffer.info.channels
 
           for (let color = 0; color < CHANNELS; color++) {
             // TODO: don't just copy single pixel, do proper image interpolating
-            warpedTile[warpedBufferIndex + color] = buffer.data[bufferIndex + color]
+            warpedTile[warpedBufferIndex + color] =
+              buffer.data[bufferIndex + color]
           }
         }
       }
@@ -242,7 +215,87 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
 
   res.send(warpedTileJpg)
 
+  const xyzTileUrl = `https://tiles.allmaps.org${req.originalUrl}`
   cache.set(xyzTileUrl, warpedTileJpg)
+}
+
+app.get('/', async (req, res) => {
+  res.send({
+    name: 'Allmaps Tile Server'
+  })
+})
+
+app.get('/:z/:x/:y.png', async (req, res) => {
+  if (req.query.annotation) {
+    try {
+      const annotation = JSON.parse(req.query.annotation)
+
+      const maps = parse(annotation)
+
+      if (maps.length !== 1) {
+        res.status(400).send({
+          error: 'Annotation must contain exactly one map'
+        })
+        return
+      }
+
+      const map = maps[0]
+      sendWarpedMapTile(req, res, map, cache)
+    } catch (err) {
+      res.status(400).send({
+        error: err.message
+      })
+    }
+  } else {
+    res.status(400).send({
+      error: 'No annotation query parameter supplied'
+    })
+  }
+})
+
+// TODO:
+// app.get('/maps/:mapId/tiles.json', async (req, res) => {
+//   // See https://github.com/mapbox/tilejson-spec/blob/master/3.0.0/example/osm.json
+// })
+
+// TODO: support retina tiles @2x
+app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
+  res.set({ 'Content-Type': 'image/png' })
+
+  // TODO: implement cancelled request
+  // req.on('close', (err) => {
+  //   cancelRequest = true
+  // })
+
+  let useCache = true
+  if ('nocache' in req.query) {
+    useCache = false
+  }
+
+  const xyzTileUrl = `https://tiles.allmaps.org${req.originalUrl}`
+
+  let cached
+  // TODO: also use useCache in fetchImage and fetchJson
+  if (useCache) {
+    cached = await cache.get(xyzTileUrl)
+  }
+
+  if (cached) {
+    res.send(cached)
+    return
+  }
+
+  const mapId = req.params.mapId
+
+  let map
+  try {
+    map = await fetchJson(cache, `https://api.allmaps.org/maps/${mapId}`)
+  } catch (err) {
+    sendFetchError(res, err)
+    return
+  }
+
+  sendWarpedMapTile(req, res, map, cache)
 })
 
 app.listen(port, () => {
