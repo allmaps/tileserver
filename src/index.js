@@ -57,6 +57,13 @@ async function sendWarpedMapTile(req, res, map, cache) {
   const x = parseInt(req.params.x)
   const y = parseInt(req.params.y)
 
+  if (!(x >= 0 && y >= 0 && z >= 0)) {
+    sendError(res, {
+      message: 'x, y and z must be positive integers'
+    })
+    return
+  }
+
   let pixelMask
   if (map.pixelMask) {
     pixelMask = map.pixelMask
@@ -203,7 +210,7 @@ async function sendWarpedMapTile(req, res, map, cache) {
     }
   }
 
-  const warpedTileJpg = await sharp(warpedTile, {
+  const warpedTilePng = await sharp(warpedTile, {
     raw: {
       width: TILE_SIZE,
       height: TILE_SIZE,
@@ -213,10 +220,11 @@ async function sendWarpedMapTile(req, res, map, cache) {
     .toFormat('png')
     .toBuffer()
 
-  res.send(warpedTileJpg)
+  res.set({ 'Content-Type': 'image/png' })
+  res.send(warpedTilePng)
 
   const xyzTileUrl = `https://tiles.allmaps.org${req.originalUrl}`
-  cache.set(xyzTileUrl, warpedTileJpg)
+  cache.set(xyzTileUrl, warpedTilePng)
 }
 
 app.get('/', async (req, res) => {
@@ -224,6 +232,15 @@ app.get('/', async (req, res) => {
     name: 'Allmaps Tile Server'
   })
 })
+
+// TODO: add the following routes:
+//
+// app.get('/maps/:mapId/%7Bz%7D/%7Bx%7D/%7By%7D.png', async (req, res) => {
+// })
+//
+// app.get('/%7Bz%7D/%7Bx%7D/%7By%7D.png', async (req, res) => {
+// })
+
 
 app.get('/:z/:x/:y.png', async (req, res) => {
   if (req.query.annotation) {
@@ -240,7 +257,7 @@ app.get('/:z/:x/:y.png', async (req, res) => {
       }
 
       const map = maps[0]
-      sendWarpedMapTile(req, res, map, cache)
+      await sendWarpedMapTile(req, res, map, cache)
     } catch (err) {
       res.status(400).send({
         error: err.message
@@ -260,8 +277,6 @@ app.get('/:z/:x/:y.png', async (req, res) => {
 
 // TODO: support retina tiles @2x
 app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
-  res.set({ 'Content-Type': 'image/png' })
-
   // TODO: implement cancelled request
   // req.on('close', (err) => {
   //   cancelRequest = true
@@ -295,7 +310,7 @@ app.get('/maps/:mapId/:z/:x/:y.png', async (req, res) => {
     return
   }
 
-  sendWarpedMapTile(req, res, map, cache)
+  await sendWarpedMapTile(req, res, map, cache)
 })
 
 app.listen(port, () => {
