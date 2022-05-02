@@ -8,7 +8,11 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js"
   },
-  "author": "Bert Spaan",
+  "author": {
+    "name": "Bert Spaan",
+    "email": "hello@bertspaan.nl",
+    "url": "https://bertspaan.nl"
+  },
   "license": "GPL-3.0-or-later",
   "dependencies": {
     "@allmaps/transform": "^1.0.0-alpha.6",
